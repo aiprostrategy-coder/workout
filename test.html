@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Тесты ядра</title>
+<style>
+  body { font: 15px/1.5 ui-monospace, Consolas, monospace; margin: 24px; background: #0f172a; color: #e2e8f0; }
+  h1 { font-size: 18px; }
+  .ok { color: #4ade80; }
+  .fail { color: #f87171; }
+  #summary { margin: 16px 0; padding: 12px; border-radius: 8px; font-weight: bold; }
+  #summary.ok { background: #14532d; }
+  #summary.fail { background: #7f1d1d; }
+  li { margin: 2px 0; }
+</style>
+</head>
+<body>
+<h1>Тесты ядра</h1>
+<div id="summary"></div>
+<ol id="list"></ol>
+
+<script src="core.js"></script>
+<script>
+'use strict';
+const W = window.WT;
+const results = [];
+
+function check(name, got, want) {
+  const g = JSON.stringify(got), w = JSON.stringify(want);
+  results.push({ name, pass: g === w, got: g, want: w });
+}
+
+// Фиксированная точка отсчёта вместо Date.now(): тест не должен зависеть от времени запуска.
+const NOW = new Date(2026, 9, 7, 18, 0, 0).getTime();
+function daysAgo(n, hour) {
+  const d = new Date(NOW);
+  d.setDate(d.getDate() - n);
+  d.setHours(hour == null ? 10 : hour, 0, 0, 0);
+  return d.getTime();
+}
+const today = W.dayKey(NOW);
+
+// --- склейка нажатий в подход ---
+let s = W.emptyState();
+s = W.addEntry(s, 'pullups', 10, NOW);
+s = W.addEntry(s, 'pullups', 1, NOW + 1800);
+s = W.addEntry(s, 'pullups', 1, NOW + 3400);
+check('три нажатия в окне = один подход 12', W.setsFor(s, 'pullups', today), [12]);
+
+s = W.addEntry(s, 'pullups', 5, NOW + 63400);
+s = W.addEntry(s, 'pullups', 5, NOW + 64000);
+check('после паузы — второй подход 10', W.setsFor(s, 'pullups', today), [12, 10]);
+check('итог за день 22', W.dayTotal(s, 'pullups', today), 22);
+
+// --- граница окна ---
+let b = W.addEntry(W.emptyState(), 'dips', 5, NOW);
+b = W.addEntry(b, 'dips', 5, NOW + 3000);
+check('ровно 3000 мс — тот же подход', W.setsFor(b, 'dips', today), [10]);
+
+let c = W.addEntry(W.emptyState(), 'dips', 5, NOW);
+c = W.addEntry(c, 'dips', 5, NOW + 3001);
+check('3001 мс — новый подход', W.setsFor(c, 'dips', today), [5, 5]);
+
+// --- упражнения не путаются между собой ---
+let m = W.addEntry(W.emptyState(), 'pullups', 10, NOW);
+m = W.addEntry(m, 'pushups', 10, NOW + 1000);
+m = W.addEntry(m, 'pullups', 1, NOW + 2000);
+check('чужое нажатие внутри окна не разрывает подход', W.setsFor(m, 'pullups', today), [11]);
+check('у другого упражнения свой подход', W.setsFor(m, 'pushups', today), [10]);
+
+// --- сдвиг часов и граница суток ---
+let back = W.addEntry(W.emptyState(), 'abs', 10, NOW);
+back = W.addEntry(back, 'abs', 10, NOW - 2000);
+check('часы ушли назад — новый подход, не склейка', W.setsFor(back, 'abs', today), [10, 10]);
+
+const midnight = new Date(2026, 9, 7, 23, 59, 59).getTime();
+let mid = W.addEntry(W.emptyState(), 'abs', 10, midnight);
+mid = W.addEntry(mid, 'abs', 10, midnight + 2000);
+check('подход не пересекает полночь: 7-е', W.setsFor(mid, 'abs', '2026-10-07'), [10]);
+check('подход не пересекает полночь: 8-е', W.setsFor(mid, 'abs', '2026-10-08'), [10]);
+
+// --- секундомер планки всегда открывает новый подход ---
+let p = W.addEntry(W.emptyState(), 'plank', 60, NOW, { newSet: true });
+p = W.addEntry(p, 'plank', 45, NOW + 500, { newSet: true });
+check('newSet не склеивает, даже внутри окна', W.setsFor(p, 'plank', today), [60, 45]);
+
+// --- отмена ---
+let u = W.addEntry(W.emptyState(), 'squats', 10, NOW);
+u = W.addEntry(u, 'squats', 1, NOW + 1000);
+u = W.addEntry(u, 'squats', 1, NOW + 2000);
+u = W.undoLast(u, NOW + 2500);
+check('отмена снимает нажатие, а не подход', W.setsFor(u, 'squats', today), [11]);
+
+let u2 = W.addEntry(W.emptyState(), 'squats', 7, NOW);
+u2 = W.undoLast(u2, NOW + 100);
+check('подход исчезает, когда опустел', W.setsFor(u2, 'squats', today), []);
+check('отменять нечего — состояние не меняется', W.undoLast(u2, NOW).entries.length, 0);
+
+const old = W.addEntry(W.emptyState(), 'abs', 30, daysAgo(1));
+check('вчерашнюю запись отмена не трогает', W.undoLast(old, NOW).entries.length, 1);
+check('кнопка отмены знает, что отменять', W.lastEntry(u, NOW + 2500).delta, 1);
+check('для прошлого дня отменять нечего', W.lastEntry(old, NOW), null);
+
+// --- неделя ---
+let wk = W.addEntry(W.emptyState(), 'pushups', 100, daysAgo(6));
+wk = W.addEntry(wk, 'pushups', 100, daysAgo(7));
+check('6 дней назад входит в неделю, 7 — нет', W.weekTotal(wk, 'pushups', NOW), 100);
+
+// --- серия ---
+let st = W.addEntry(W.emptyState(), 'pullups', 1, NOW);
+st = W.addEntry(st, 'pullups', 1, daysAgo(1));
+st = W.addEntry(st, 'pullups', 1, daysAgo(2));
+check('три дня подряд', W.streak(st, NOW), 3);
+
+let gap = W.addEntry(W.emptyState(), 'pullups', 1, NOW);
+gap = W.addEntry(gap, 'pullups', 1, daysAgo(2));
+check('пропущенный день разрывает серию', W.streak(gap, NOW), 1);
+
+let yd = W.addEntry(W.emptyState(), 'pullups', 1, daysAgo(1));
+yd = W.addEntry(yd, 'pullups', 1, daysAgo(2));
+check('утром серия считается от вчера', W.streak(yd, NOW), 2);
+check('позавчера без вчера — серия ноль', W.streak(W.addEntry(W.emptyState(), 'pullups', 1, daysAgo(2)), NOW), 0);
+check('пустое состояние — серия ноль', W.streak(W.emptyState(), NOW), 0);
+
+// --- вес ---
+let g = W.setWeight(W.emptyState(), 79, daysAgo(3));
+g = W.setWeight(g, 78.4, NOW);
+check('вес: последний замер и дельта', W.weightInfo(g), { value: 78.4, day: today, delta: -0.6 });
+g = W.setWeight(g, 78.1, NOW);
+check('повторный ввод за день перезаписывает', W.weightInfo(g).value, 78.1);
+check('первый замер — дельты нет', W.weightInfo(W.setWeight(W.emptyState(), 80, NOW)).delta, null);
+check('вес не создаёт серию тренировок', W.streak(g, NOW), 0);
+
+// --- вывод ---
+const failed = results.filter((r) => !r.pass);
+document.getElementById('list').innerHTML = results.map((r) =>
+  '<li class="' + (r.pass ? 'ok' : 'fail') + '">' + (r.pass ? '✓ ' : '✗ ') + r.name +
+  (r.pass ? '' : ' — получено ' + r.got + ', ожидалось ' + r.want) + '</li>'
+).join('');
+const sum = document.getElementById('summary');
+sum.className = failed.length ? 'fail' : 'ok';
+sum.textContent = failed.length
+  ? failed.length + ' из ' + results.length + ' ПРОВАЛЕНО'
+  : 'ВСЕ ' + results.length + ' ПРОЙДЕНЫ';
+document.title = sum.textContent;
+window.__results = { total: results.length, failed: failed.length };
+</script>
+</body>
+</html>

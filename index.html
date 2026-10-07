@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<title>Тренировки</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #f1f5f9; --card: #ffffff; --ink: #0f172a; --dim: #64748b;
+    --line: #e2e8f0; --btn: #e2e8f0; --btn-ink: #0f172a; --accent: #2563eb;
+    --warn: #b91c1c; --up: #dc2626; --down: #16a34a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a; --card: #1e293b; --ink: #f1f5f9; --dim: #94a3b8;
+      --line: #334155; --btn: #334155; --btn-ink: #f1f5f9; --accent: #60a5fa;
+      --warn: #fca5a5; --up: #f87171; --down: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px 12px 124px;
+    background: var(--bg); color: var(--ink);
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 8px; padding: 4px 4px 12px;
+  }
+  .today { font-size: 15px; color: var(--dim); }
+  .streak { font-size: 15px; font-weight: 600; white-space: nowrap; }
+  #grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .card {
+    background: var(--card); border-radius: 14px; padding: 10px 10px 12px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .card h2 { margin: 0; font-size: 14px; font-weight: 600; color: var(--dim); }
+  .big { font-size: 34px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+  .btns { display: flex; gap: 6px; margin-top: auto; }
+  button, .filebtn {
+    flex: 1; min-height: 50px; border: 0; border-radius: 10px;
+    background: var(--btn); color: var(--btn-ink);
+    font: inherit; font-weight: 600; cursor: pointer;
+    touch-action: manipulation; user-select: none;
+    display: flex; align-items: center; justify-content: center;
+  }
+  button:active { filter: brightness(0.88); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  .timer { background: var(--accent); color: #fff; font-variant-numeric: tabular-nums; }
+  .meta { font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; min-height: 1.4em; }
+  .weight {
+    margin-top: 10px; background: var(--card); border-radius: 14px; padding: 12px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .weight h2 { margin: 0; font-size: 14px; font-weight: 600; color: var(--dim); flex: 1; }
+  .weight input {
+    width: 96px; min-height: 50px; text-align: center;
+    border: 1px solid var(--line); border-radius: 10px;
+    background: var(--bg); color: var(--ink);
+    font: inherit; font-size: 20px; font-weight: 700;
+  }
+  .delta { font-size: 14px; font-weight: 600; width: 52px; text-align: right; }
+  .delta.up { color: var(--up); }
+  .delta.down { color: var(--down); }
+  .bar {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+    background: var(--bg); border-top: 1px solid var(--line);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .bar .row { display: flex; gap: 8px; }
+  #undo { font-weight: 500; }
+  .small { min-height: 40px; font-size: 14px; font-weight: 500; color: var(--dim); background: transparent; }
+  #warn { color: var(--warn); font-size: 13px; text-align: center; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="today" id="today"></div>
+  <div class="streak" id="streak"></div>
+</header>
+
+<main id="grid"></main>
+
+<section class="weight">
+  <h2>Вес тела</h2>
+  <input id="weight" type="number" inputmode="decimal" step="0.1" min="20" max="400" placeholder="—">
+  <span class="delta" id="weightDelta"></span>
+</section>
+
+<div class="bar">
+  <div id="warn" hidden>Браузер не сохраняет данные — записи пропадут при закрытии</div>
+  <button id="undo">Отменять нечего</button>
+  <div class="row">
+    <button class="small" id="export">Экспорт</button>
+    <label class="filebtn small" for="importFile">Импорт</label>
+    <input id="importFile" type="file" accept=".json,application/json" hidden>
+  </div>
+</div>
+
+<script src="core.js"></script>
+<script>
+'use strict';
+const W = window.WT;
+
+let state = W.load();
+let saveFailed = false;
+let timerStart = null;
+let timerHandle = null;
+const refs = new Map();
+
+function plural(n, one, few, many) {
+  const a = Math.abs(n) % 100;
+  const b = a % 10;
+  if (a > 10 && a < 20) return many;
+  if (b > 1 && b < 5) return few;
+  if (b === 1) return one;
+  return many;
+}
+
+function mmss(sec) {
+  return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+}
+
+function fmt(ex, n) {
+  if (!ex.timeBased) return String(n);
+  return n < 60 ? n + 'с' : mmss(n);
+}
+
+function commit(next) {
+  state = next;
+  if (!W.save(state)) saveFailed = true;
+  render();
+}
+
+function buzz() {
+  if (navigator.vibrate) navigator.vibrate(12);
+}
+
+function press(ex, delta) {
+  buzz();
+  commit(W.addEntry(state, ex.id, delta, Date.now()));
+}
+
+function toggleTimer() {
+  const now = Date.now();
+  if (timerStart === null) {
+    timerStart = now;
+    timerHandle = setInterval(render, 500);
+    render();
+    return;
+  }
+  const sec = Math.max(1, Math.round((now - timerStart) / 1000));
+  clearInterval(timerHandle);
+  timerHandle = null;
+  timerStart = null;
+  buzz();
+  commit(W.addEntry(state, 'plank', sec, now, { newSet: true }));
+}
+
+const grid = document.getElementById('grid');
+for (const ex of W.EXERCISES) {
+  const card = document.createElement('article');
+  card.className = 'card';
+  card.innerHTML = '<h2></h2><div class="big">0</div>' +
+    (ex.timeBased ? '<button class="timer"></button>' : '') +
+    '<div class="btns"></div><div class="meta"></div>';
+  card.querySelector('h2').textContent = ex.name;
+  const btns = card.querySelector('.btns');
+  for (const step of ex.steps) {
+    const b = document.createElement('button');
+    b.textContent = '+' + step;
+    b.addEventListener('click', function () { press(ex, step); });
+    btns.appendChild(b);
+  }
+  const timer = card.querySelector('.timer');
+  if (timer) timer.addEventListener('click', toggleTimer);
+  refs.set(ex.id, {
+    big: card.querySelector('.big'),
+    meta: card.querySelector('.meta'),
+    timer: timer
+  });
+  grid.appendChild(card);
+}
+
+const els = {
+  today: document.getElementById('today'),
+  streak: document.getElementById('streak'),
+  weight: document.getElementById('weight'),
+  weightDelta: document.getElementById('weightDelta'),
+  undo: document.getElementById('undo'),
+  warn: document.getElementById('warn')
+};
+
+function render() {
+  const now = Date.now();
+  const day = W.dayKey(now);
+
+  els.today.textContent = new Date(now).toLocaleDateString('ru-RU', {
+    day: 'numeric', month: 'long', weekday: 'long'
+  });
+
+  const st = W.streak(state, now);
+  els.streak.textContent = st
+    ? 'серия ' + st + ' ' + plural(st, 'день', 'дня', 'дней')
+    : 'серии нет';
+
+  for (const ex of W.EXERCISES) {
+    const r = refs.get(ex.id);
+    const sets = W.setsFor(state, ex.id, day);
+
+    if (ex.timeBased && timerStart !== null) {
+      r.big.textContent = mmss(Math.floor((now - timerStart) / 1000));
+    } else {
+      r.big.textContent = fmt(ex, W.dayTotal(state, ex.id, day));
+    }
+    if (r.timer) {
+      r.timer.textContent = timerStart === null ? '▶ Секундомер' : '■ Записать';
+    }
+    r.meta.textContent = (sets.length ? sets.map(function (n) { return fmt(ex, n); }).join(', ') : '—') +
+      ' · нед. ' + fmt(ex, W.weekTotal(state, ex.id, now));
+  }
+
+  const wi = W.weightInfo(state);
+  if (document.activeElement !== els.weight) {
+    els.weight.value = wi.day === day && wi.value !== null ? wi.value : '';
+    els.weight.placeholder = wi.value === null ? '—' : String(wi.value);
+  }
+  if (wi.delta === null || wi.delta === 0) {
+    els.weightDelta.textContent = '';
+    els.weightDelta.className = 'delta';
+  } else {
+    els.weightDelta.textContent = (wi.delta > 0 ? '+' : '−') + Math.abs(wi.delta);
+    els.weightDelta.className = 'delta ' + (wi.delta > 0 ? 'up' : 'down');
+  }
+
+  const last = W.lastEntry(state, now);
+  if (last) {
+    const ex = W.EXERCISES.find(function (e) { return e.id === last.ex; });
+    els.undo.disabled = false;
+    els.undo.textContent = '← Отменить: ' + ex.name + ' +' + fmt(ex, last.delta);
+  } else {
+    els.undo.disabled = true;
+    els.undo.textContent = 'Отменять нечего';
+  }
+
+  els.warn.hidden = !saveFailed;
+}
+
+els.undo.addEventListener('click', function () {
+  commit(W.undoLast(state, Date.now()));
+});
+
+els.weight.addEventListener('change', function () {
+  const kg = parseFloat(String(els.weight.value).replace(',', '.'));
+  if (!isFinite(kg) || kg < 20 || kg > 400) {
+    render();
+    return;
+  }
+  commit(W.setWeight(state, Math.round(kg * 10) / 10, Date.now()));
+});
+
+document.getElementById('export').addEventListener('click', function () {
+  const blob = new Blob([JSON.stringify(state)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'workout-' + W.dayKey(Date.now()) + '.json';
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+});
+
+document.getElementById('importFile').addEventListener('change', async function (e) {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(await file.text());
+  } catch (err) {
+    alert('Файл не читается как JSON');
+    return;
+  }
+  if (!parsed || !Array.isArray(parsed.entries)) {
+    alert('В файле нет записей тренировок');
+    return;
+  }
+  if (!confirm('Заменить все текущие данные? В файле записей: ' + parsed.entries.length)) return;
+  commit({ v: 1, entries: parsed.entries, weight: parsed.weight || {} });
+});
+
+render();
+
+// Офлайн-режим — надстройка: без него приложение работает, но требует сети при открытии.
+// Отказ регистрации не прячем, иначе на телефоне он останется незамеченным.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(function (e) {
+    console.warn('Офлайн-режим не включился:', e.message);
+  });
+}
+</script>
+</body>
+</html>
